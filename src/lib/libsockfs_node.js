@@ -67,6 +67,9 @@ var NodeSockFSLibrary = {
     getDgram() {
       return nodeSockHelpers.dgramModule ??= (process.getBuiltinModule || require)('dgram');
     },
+    getOs() {
+      return nodeSockHelpers.osModule ??= (process.getBuiltinModule || require)('os');
+    },
     getDns() {
       return nodeSockHelpers.dnsModule ??= (process.getBuiltinModule || require)('dns');
     },
@@ -421,6 +424,18 @@ var NodeSockFSLibrary = {
         return nodeSockHelpers.nodeErrToErrno(e);
       }
       return 0;
+    },
+    // node selects the interface of an IPv6 membership by scoped address:
+    // '::%en0', or '::%2' on Windows, where the scope is a number. Its only link
+    // from an index to a name is the scopeid of a link-local address, so an
+    // interface without one can't be found.
+    ipv6MembershipIface(index) {
+      var interfaces = nodeSockHelpers.getOs().networkInterfaces();
+      for (var [name, addrs] of Object.entries(interfaces)) {
+        if (addrs.some((a) => a.scopeid === index)) {
+          return '::%' + (process.platform === 'win32' ? index : name);
+        }
+      }
     },
     applyMemberships(sock) {
       // A join made before bind() returned 0 without reaching the kernel. If the
@@ -998,12 +1013,12 @@ var NodeSockFSLibrary = {
             if (optlen < 20) return -{{{ cDefs.EINVAL }}};
             // As for IP_ADD_MEMBERSHIP above, though here a leave is refused too.
             if ({{{ makeGetValue('optval', 0, 'u8') }}} !== 0xff) return -{{{ cDefs.EINVAL }}}; // ff00::/8
-            // node selects the interface by name and has no index-to-name
-            // lookup, so only the default interface (index 0) is supported.
-            if ({{{ makeGetValue('optval', 16, 'i32') }}}) return -{{{ cDefs.ENODEV }}};
+            var index = {{{ makeGetValue('optval', 16, 'i32') }}};
+            var iface = index ? nodeSockHelpers.ipv6MembershipIface(index) : undefined;
+            if (index && !iface) return -{{{ cDefs.ENODEV }}};
             var src32 = {{{ getHeapOffset('optval', 'i32') }}};
             var group = inetNtop6(HEAP32.subarray(src32, src32 + 4));
-            return -nodeSockHelpers.setMembership(sock, optname === 20, group, undefined);
+            return -nodeSockHelpers.setMembership(sock, optname === 20, group, iface);
           }
         }
       } else if (level === {{{ cDefs.IPPROTO_TCP }}}) {

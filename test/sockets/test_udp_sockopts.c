@@ -14,8 +14,8 @@
  * and IPv6 equivalents reach the kernel: a duplicate join fails with
  * EADDRINUSE, leaving an unjoined group with EADDRNOTAVAIL, a join made before
  * bind() is applied once bound, a leave that names no interface gets the
- * kernel's answer, and a join the kernel rejects leaves nothing behind. Plain
- * POSIX, also runs natively.
+ * kernel's answer, a join the kernel rejects leaves nothing behind, and an IPv6
+ * join can name its interface by index. Plain POSIX, also runs natively.
  */
 
 #include <arpa/inet.h>
@@ -88,10 +88,14 @@ int set4(int fd, int opt, const char* group) {
   return set4_on(fd, opt, group, "127.0.0.1");
 }
 
-int set6(int fd, int opt, const char* group) {
-  struct ipv6_mreq m = {0};
+int set6_on(int fd, int opt, const char* group, unsigned index) {
+  struct ipv6_mreq m = {.ipv6mr_interface = index};
   inet_pton(AF_INET6, group, &m.ipv6mr_multiaddr);
   return setsockopt(fd, IPPROTO_IPV6, opt, &m, sizeof(m)) == 0 ? 0 : errno;
+}
+
+int set6(int fd, int opt, const char* group) {
+  return set6_on(fd, opt, group, 0);
 }
 
 void check_membership(void) {
@@ -169,6 +173,24 @@ void check_membership(void) {
     assert(set6(fd, IPV6_LEAVE_GROUP, "ff02::1:3") == 0);
     assert(set6(fd, IPV6_LEAVE_GROUP, "ff02::1:3") == EADDRNOTAVAIL);
   }
+
+  // Name the interface by index. Which interfaces can join varies by host (and
+  // there may be none in a container), so use the first that does.
+  for (unsigned index = 1; index < 32; index++) {
+    if (set6_on(fd, IPV6_JOIN_GROUP, "ff02::1:4", index) == 0) {
+      assert(set6_on(fd, IPV6_JOIN_GROUP, "ff02::1:4", index) == EADDRINUSE);
+      assert(set6_on(fd, IPV6_LEAVE_GROUP, "ff02::1:4", index) == 0);
+      assert(set6_on(fd, IPV6_LEAVE_GROUP, "ff02::1:4", index) == EADDRNOTAVAIL);
+      // As for IPv4, the kernel decides what a leave naming no interface finds.
+      assert(set6_on(fd, IPV6_JOIN_GROUP, "ff02::1:4", index) == 0);
+      left = set6(fd, IPV6_LEAVE_GROUP, "ff02::1:4");
+      assert(left == 0 || left == EADDRNOTAVAIL);
+      assert(set6_on(fd, IPV6_LEAVE_GROUP, "ff02::1:4", index) == (left ? 0 : EADDRNOTAVAIL));
+      break;
+    }
+  }
+  // An index no interface has is refused. The error differs between kernels.
+  assert(set6_on(fd, IPV6_JOIN_GROUP, "ff02::1:4", 9999) != 0);
   close(fd);
 }
 
